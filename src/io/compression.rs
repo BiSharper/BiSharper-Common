@@ -1,6 +1,24 @@
 use std::io;
 use std::io::{Read, Write};
 
+const LZSS_WINDOW_SIZE: usize = 0x1000;
+const LZSS_FILL: u8 = 0x20;
+const LZSS_MATCH_MAX: usize = 0x12;
+const LZSS_MATCH_THRESHOLD: u8 = 0x2;
+
+fn lzss_decompression_helper(checksum: &mut i32, dst: &mut Vec<u8>, text_buf: &mut [u8], r: &mut i32, bytes_left: &mut usize, c: u8, signed_checksum: bool) {
+    *checksum = if signed_checksum {
+        checksum.wrapping_add(c as i8 as i32)
+    } else {
+        checksum.wrapping_add(c as i32)
+    };
+
+    dst.push(c);
+    *bytes_left -= 1;
+    text_buf[*r as usize] = c;
+    *r = (*r + 1) & (LZSS_WINDOW_SIZE - 1) as i32;
+}
+
 pub trait CompressionReadExt: Read {
     fn read_u8(&mut self) -> io::Result<u8> {
         let mut buffer = [0u8; 1];
@@ -9,48 +27,38 @@ pub trait CompressionReadExt: Read {
     }
 
     fn read_lzss(&mut self, expected_length: usize, signed_checksum: bool) -> io::Result<Vec<u8>> {
-        const N: usize = 4096;
-        const F: usize = 18;
-        const THRESHOLD: u8 = 2;
-
-        let mut text_buf: [u8; N + F - 1] = [0; N + F - 1];
+        let mut text_buf = [LZSS_FILL; LZSS_WINDOW_SIZE + LZSS_MATCH_MAX - 1];
         let mut bytes_left = expected_length;
         let mut dst = Vec::with_capacity(bytes_left);
         let mut i = 0;
         let mut j = 0;
-        let mut r: i32 = (N - F) as i32;
+        let mut r: i32 = (LZSS_WINDOW_SIZE - LZSS_MATCH_MAX) as i32;
         let mut c: u8= 0;
         let mut checksum: i32 = 0;
         let mut flags: i32 = 0;
 
         while bytes_left != 0 {
 
-            c = Self::read_u8(self)?;
-            if flags & 1 == 0 {
+            flags >>= 1;
+
+            if flags & 256 == 0 {
+                c = Self::read_u8(self)?;
                 flags = c as i32 | 0xff00;
             }
 
             if flags & 1 != 0 {
                 c = Self::read_u8(self)?;
-                checksum = if signed_checksum {
-                    checksum.wrapping_add(c as i8 as i32)
-                } else {
-                    checksum.wrapping_add(c as i32)
-                };
-
-                dst.push(c);
-                bytes_left -= 1;
-                text_buf[r as usize] = c;
-                r = (r + 1) & (N - 1) as i32;
+                lzss_decompression_helper(
+                    &mut checksum, &mut dst, &mut text_buf,
+                    &mut r, &mut bytes_left, c, signed_checksum,
+                );
                 flags >>= 1;
                 continue
             }
 
-            i = Self::read_u8(self)?;
-            j = Self::read_u8(self)?;
-            i |= (j & 0xf0) << 4;
-            j &= 0x0f;
-            j += THRESHOLD;
+            i = Self::read_u8(self)?; j = Self::read_u8(self)?;
+            i |= (j & 0xf0) << 4; j &= 0x0f;
+            j += LZSS_MATCH_THRESHOLD;
             let ii = r - i as i32;
             let jj = j as i32+ ii;
             if (j + 1) as usize> bytes_left {
@@ -60,19 +68,12 @@ pub trait CompressionReadExt: Read {
                 ));
             }
             for ii in ii..=jj {
-                c = text_buf[(ii & (N - 1) as i32) as usize];
-                checksum = if signed_checksum {
-                    checksum.wrapping_add(c as i8 as i32)
-                } else {
-                    checksum.wrapping_add(c as i32)
-                };
-
-                dst.push(c);
-                bytes_left -= 1;
-                text_buf[r as usize] = c;
-                r = (r + 1) & (N - 1) as i32;
+                c = text_buf[(ii & (LZSS_WINDOW_SIZE - 1) as i32) as usize];
+                lzss_decompression_helper(
+                    &mut checksum, &mut dst, &mut text_buf,
+                    &mut r, &mut bytes_left, c, signed_checksum,
+                );
             }
-            flags >>= 1;
         }
         let mut cs_data = [0u8; 4];
         self.read_exact(&mut cs_data)?;
