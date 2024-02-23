@@ -1,10 +1,12 @@
+use std::fmt::Write;
 use std::io;
-use std::io::{Read, Write};
+use std::io::Read;
 
 const LZSS_WINDOW_SIZE: usize = 0x1000;
 const LZSS_FILL: u8 = 0x20;
 const LZSS_MATCH_MAX: usize = 0x12;
 const LZSS_MATCH_THRESHOLD: u8 = 0x2;
+const LZSS_BUFFER_SIZE: usize = LZSS_WINDOW_SIZE + LZSS_MATCH_MAX - 1;
 
 fn lzss_decompression_helper(checksum: &mut i32, dst: &mut Vec<u8>, text_buf: &mut [u8], r: &mut i32, bytes_left: &mut usize, c: u8, signed_checksum: bool) {
     *checksum = if signed_checksum {
@@ -19,7 +21,7 @@ fn lzss_decompression_helper(checksum: &mut i32, dst: &mut Vec<u8>, text_buf: &m
     *r = (*r + 1) & (LZSS_WINDOW_SIZE - 1) as i32;
 }
 
-pub trait CompressionReadExt: Read {
+pub trait LzssCompressionReadExt: Read {
     fn read_u8(&mut self) -> io::Result<u8> {
         let mut buffer = [0u8; 1];
         self.read_exact(&mut buffer)?;
@@ -27,7 +29,7 @@ pub trait CompressionReadExt: Read {
     }
 
     fn read_lzss(&mut self, expected_length: usize, signed_checksum: bool) -> io::Result<Vec<u8>> {
-        let mut text_buf = [LZSS_FILL; LZSS_WINDOW_SIZE + LZSS_MATCH_MAX - 1];
+        let mut text_buf = [LZSS_FILL; LZSS_BUFFER_SIZE];
         let mut bytes_left = expected_length;
         let mut dst = Vec::with_capacity(bytes_left);
         let mut i = 0;
@@ -85,73 +87,56 @@ pub trait CompressionReadExt: Read {
 
         return Ok(dst)
     }
+}
 
-    fn read_cstring(&mut self) -> io::Result<String> {
-        let mut bytes: Vec<u8> = Vec::new();
-        for byte in self.bytes() {
-            let b = byte?;
-            if b == 0 {
-                break;
-            }
-            bytes.push(b);
+impl<T: Read> LzssCompressionReadExt for T {
+
+}
+
+struct LzssMatch {
+    pub position: usize,
+    pub length:   usize
+}
+
+struct LzssContext {
+    text_buffer: [u8; LZSS_BUFFER_SIZE],
+    left:        [usize; LZSS_WINDOW_SIZE + 1],
+    right:       [usize; LZSS_WINDOW_SIZE + 257],
+    parent:      [usize; LZSS_WINDOW_SIZE + 1],
+    last_match:  LzssMatch
+}
+
+impl LzssContext {
+    fn new() -> Self {
+        let mut right: [usize; LZSS_WINDOW_SIZE + 257] = [0; LZSS_WINDOW_SIZE + 257];
+        for i in (LZSS_WINDOW_SIZE + 1..=LZSS_WINDOW_SIZE + 256).into_iter() {
+            right[i] = LZSS_WINDOW_SIZE;
+        }
+        Self {
+            text_buffer: [LZSS_FILL; LZSS_BUFFER_SIZE],
+            left: [0; LZSS_WINDOW_SIZE + 1],
+            right,
+            parent: [LZSS_WINDOW_SIZE; LZSS_WINDOW_SIZE + 1],
+            last_match: LzssMatch {
+                position: 0,
+                length: 0
+            },
         }
 
-        Ok(String::from_utf8(bytes).unwrap())
-    }
-
-    fn read_bis_int(&mut self) -> io::Result<u32> {
-        let mut result: u32 = 0;
-        for (i, byte) in self.bytes().enumerate() {
-            let b: u32 = byte?.into();
-            result |= (b & 0x7f) << (i * 7);
-            if b < 0x80 {
-                break;
-            }
-        }
-        Ok(result)
     }
 }
 
-pub const fn bis_int_len(x: u32) -> usize {
-    let mut temp = x;
-    let mut len = 0;
+pub trait LzssCompressionWriteExt: Write {
 
-    while temp > 0x7f {
-        len += 1;
-        temp &= !0x7f;
-        temp >>= 7;
-    }
-
-    len + 1
-}
-
-pub trait CompressionWriteExt: Write {
-    fn write_bis_int(&mut self, x: u32) -> io::Result<usize> {
-        let mut temp = x;
-        let mut len = 0;
-
-        while temp > 0x7f {
-            self.write_all(&[(0x80 | temp & 0x7f) as u8])?;
-            len += 1;
-            temp &= !0x7f;
-            temp >>= 7;
-        }
-
-        self.write_all(&[temp as u8])?;
-        Ok(len + 1)
-    }
-
-    fn write_rv_string<S: AsRef<[u8]>>(&mut self, str: S) -> io::Result<()>{
-        self.write_all(str.as_ref())?;
-        self.write_all(b"\0")?;
-        Ok(())
-    }
-}
-
-
-impl<T: Write> CompressionWriteExt for T {
-
-}
-impl<T: Read> CompressionReadExt for T {
-
+    // fn write_lzss(&mut self, data: &[u8], maximum_size: usize) -> io::Result<Vec<u8>> {
+    //     let code_size: u32 = 0;
+    //     let mask: u8 = 1;
+    //     let code_index: u8 = 1;
+    //     let s: usize = 0;
+    //     let r: usize = LZSS_WINDOW_SIZE - LZSS_MATCH_MAX;
+    //     let mut input_index: usize = 0;
+    //     let mut code_buffer: [u8; 17];
+    //
+    //     todo!()
+    // }
 }
