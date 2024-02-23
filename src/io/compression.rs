@@ -2,62 +2,75 @@ use std::io;
 use std::io::{Read, Write};
 
 pub trait CompressionReadExt: Read {
+    fn read_u8(&mut self) -> io::Result<u8> {
+        let mut buffer = [0u8; 1];
+        self.read_exact(&mut buffer)?;
+        Ok(buffer[0])
+    }
+
     fn read_lzss(&mut self, expected_length: usize, signed_checksum: bool) -> io::Result<Vec<u8>> {
         const N: usize = 4096;
         const F: usize = 18;
-        const THRESHOLD: usize = 2;
+        const THRESHOLD: u8 = 2;
 
         let mut text_buf: [u8; N + F - 1] = [0; N + F - 1];
         let mut bytes_left = expected_length;
         let mut dst = Vec::with_capacity(bytes_left);
         let mut i = 0;
         let mut j = 0;
-        let mut r = N - F;
+        let mut r: i32 = (N - F) as i32;
         let mut c: u8= 0;
         let mut checksum: i32 = 0;
-        let push_char = || {
-            checksum = if signed_checksum {
-                checksum.wrapping_add(c as i8 as i32)
-            } else {
-                checksum.wrapping_add(c as i32)
-            };
-
-            dst.push(c);
-            bytes_left -= 1;
-            text_buf[r] = c;
-            r = (r + 1) & (N - 1);
-        };
         let mut flags: i32 = 0;
 
-        while bytes_left > 0 {
+        while bytes_left != 0 {
 
-            c = self.read_u8()?;
+            c = Self::read_u8(self)?;
             if flags & 1 == 0 {
                 flags = c as i32 | 0xff00;
             }
 
             if flags & 1 != 0 {
-                push_char();
+                c = Self::read_u8(self)?;
+                checksum = if signed_checksum {
+                    checksum.wrapping_add(c as i8 as i32)
+                } else {
+                    checksum.wrapping_add(c as i32)
+                };
+
+                dst.push(c);
+                bytes_left -= 1;
+                text_buf[r as usize] = c;
+                r = (r + 1) & (N - 1) as i32;
                 flags >>= 1;
                 continue
             }
 
-            i = self.read_u8()?;
-            j = self.read_u8()?;
+            i = Self::read_u8(self)?;
+            j = Self::read_u8(self)?;
             i |= (j & 0xf0) << 4;
             j &= 0x0f;
             j += THRESHOLD;
-            let ii = r - i;
-            let jj = j + ii;
-            if j + 1 > bytes_left {
+            let ii = r - i as i32;
+            let jj = j as i32+ ii;
+            if (j + 1) as usize> bytes_left {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "LZSS overflow",
                 ));
             }
             for ii in ii..=jj {
-                c = text_buf[ii & (N - 1)];
-                push_char();
+                c = text_buf[(ii & (N - 1) as i32) as usize];
+                checksum = if signed_checksum {
+                    checksum.wrapping_add(c as i8 as i32)
+                } else {
+                    checksum.wrapping_add(c as i32)
+                };
+
+                dst.push(c);
+                bytes_left -= 1;
+                text_buf[r as usize] = c;
+                r = (r + 1) & (N - 1) as i32;
             }
             flags >>= 1;
         }
