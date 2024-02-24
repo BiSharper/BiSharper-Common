@@ -1,6 +1,7 @@
 use std::io;
 use std::io::Read;
 use std::io::Write;
+use byteorder::ReadBytesExt;
 
 const N: u32 = 0x1000;
 const LZSS_NODE_NULL: u32 = N;
@@ -23,12 +24,6 @@ fn lzss_decompression_helper(checksum: &mut i32, dst: &mut Vec<u8>, text_buf: &m
 }
 
 pub trait LzssCompressionReadExt: Read {
-    fn read_u8(&mut self) -> io::Result<u8> {
-        let mut buffer = [0u8; 1];
-        self.read_exact(&mut buffer)?;
-        Ok(buffer[0])
-    }
-
     fn read_lzss(&mut self, expected_length: usize, signed_checksum: bool) -> io::Result<Vec<u8>> {
         let mut text_buf = [LZSS_FILL; LZSS_BUFFER_SIZE as usize];
         let mut bytes_left = expected_length;
@@ -56,8 +51,8 @@ pub trait LzssCompressionReadExt: Read {
                 flags >>= 1;
                 continue
             }
-            let mut i = Self::read_u8(self)?;
-            let mut j = Self::read_u8(self)?;
+            let mut i = self.read_u8()?;
+            let mut j = self.read_u8()?;
             i |= (j & 0xf0) << 4; j &= 0x0f;
             j += LZSS_MATCH_THRESHOLD;
             let ii = r - i as i32;
